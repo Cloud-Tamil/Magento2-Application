@@ -1,0 +1,211 @@
+services:
+
+  # ==========================================================
+  # DATABASE
+  # ==========================================================
+
+  db:
+    image: mariadb:11.8
+
+    container_name: magento-db
+
+    restart: unless-stopped
+
+    environment:
+      MARIADB_DATABASE: ${MYSQL_DATABASE}
+      MARIADB_USER: ${MYSQL_USER}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+
+    ports:
+      - "${MYSQL_PORT}:3306"
+
+    volumes:
+      - mariadb_data:/var/lib/mysql
+
+    command:
+      - --max_allowed_packet=64M
+      - --innodb_buffer_pool_size=512M
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "healthcheck.sh",
+          "--connect",
+          "--innodb_initialized"
+        ]
+
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+    networks:
+      - magento
+
+
+  # ==========================================================
+  # VALKEY
+  # ==========================================================
+
+  valkey:
+    image: valkey/valkey:8.1
+
+    container_name: magento-valkey
+
+    restart: unless-stopped
+
+    ports:
+      - "${VALKEY_PORT}:6379"
+
+    volumes:
+      - valkey_data:/data
+
+    command:
+      - valkey-server
+      - --appendonly
+      - yes
+
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "valkey-cli",
+          "ping"
+        ]
+
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+    networks:
+      - magento
+
+
+  # ==========================================================
+  # OPENSEARCH
+  # ==========================================================
+
+  opensearch:
+    image: opensearchproject/opensearch:3
+
+    container_name: magento-opensearch
+
+    restart: unless-stopped
+
+    environment:
+      discovery.type: single-node
+
+      DISABLE_SECURITY_PLUGIN: "true"
+
+      DISABLE_INSTALL_DEMO_CONFIG: "true"
+
+      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS}
+
+      bootstrap.memory_lock: "true"
+
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+
+    ports:
+      - "${OPENSEARCH_PORT}:9200"
+
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fs http://localhost:9200/_cluster/health || exit 1"
+        ]
+
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+    networks:
+      - magento
+
+
+  # ==========================================================
+  # PHP-FPM / MAGENTO
+  # ==========================================================
+
+  php:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+
+      args:
+        MAGENTO_VERSION: ${MAGENTO_VERSION}
+
+    container_name: magento-php
+
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+      valkey:
+        condition: service_healthy
+
+      opensearch:
+        condition: service_healthy
+
+    volumes:
+      - magento_app:/var/www/html
+
+    networks:
+      - magento
+
+
+  # ==========================================================
+  # NGINX
+  # ==========================================================
+
+  nginx:
+    image: nginx:1.30
+
+    container_name: magento-nginx
+
+    restart: unless-stopped
+
+    depends_on:
+      - php
+
+    ports:
+      - "${NGINX_PORT}:80"
+
+    volumes:
+      - magento_app:/var/www/html:ro
+
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+
+    networks:
+      - magento
+
+
+networks:
+
+  magento:
+    driver: bridge
+
+
+volumes:
+
+  mariadb_data:
+
+  valkey_data:
+
+  opensearch_data:
+
+  magento_app:
