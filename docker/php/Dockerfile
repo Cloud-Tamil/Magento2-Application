@@ -48,6 +48,7 @@ RUN docker-php-ext-configure gd \
         bcmath \
         calendar \
         exif \
+        ftp \
         gd \
         intl \
         mysqli \
