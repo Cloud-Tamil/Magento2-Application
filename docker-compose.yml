@@ -1,7 +1,7 @@
 services:
 
   # ==========================================================
-  # DATABASE
+  # MARIADB
   # ==========================================================
 
   db:
@@ -18,7 +18,7 @@ services:
       MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
 
     ports:
-      - "${MYSQL_PORT}:3306"
+      - "${MYSQL_PORT:-3306}:3306"
 
     volumes:
       - mariadb_data:/var/lib/mysql
@@ -37,10 +37,10 @@ services:
           "--connect",
           "--innodb_initialized"
         ]
-
       interval: 10s
       timeout: 5s
       retries: 20
+      start_period: 30s
 
     networks:
       - magento
@@ -58,7 +58,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "${VALKEY_PORT}:6379"
+      - "${VALKEY_PORT:-6379}:6379"
 
     volumes:
       - valkey_data:/data
@@ -66,7 +66,7 @@ services:
     command:
       - valkey-server
       - --appendonly
-      - yes
+      - "yes"
 
     healthcheck:
       test:
@@ -75,10 +75,10 @@ services:
           "valkey-cli",
           "ping"
         ]
-
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 10s
 
     networks:
       - magento
@@ -102,7 +102,7 @@ services:
 
       DISABLE_INSTALL_DEMO_CONFIG: "true"
 
-      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS}
+      OPENSEARCH_JAVA_OPTS: "${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}"
 
       bootstrap.memory_lock: "true"
 
@@ -112,7 +112,7 @@ services:
         hard: -1
 
     ports:
-      - "${OPENSEARCH_PORT}:9200"
+      - "${OPENSEARCH_PORT:-9200}:9200"
 
     volumes:
       - opensearch_data:/usr/share/opensearch/data
@@ -121,19 +121,20 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fs http://localhost:9200/_cluster/health || exit 1"
+          "curl -fsS http://localhost:9200/_cluster/health >/dev/null || exit 1"
         ]
 
       interval: 15s
       timeout: 10s
       retries: 20
+      start_period: 60s
 
     networks:
       - magento
 
 
   # ==========================================================
-  # PHP-FPM / MAGENTO
+  # MAGENTO PHP-FPM
   # ==========================================================
 
   php:
@@ -142,7 +143,7 @@ services:
       dockerfile: docker/php/Dockerfile
 
       args:
-        MAGENTO_VERSION: ${MAGENTO_VERSION}
+        MAGENTO_VERSION: ${MAGENTO_VERSION:-2.4.8-p5}
 
     container_name: magento-php
 
@@ -151,7 +152,18 @@ services:
     env_file:
       - .env
 
+    environment:
+      MYSQL_HOST: db
+      MYSQL_PORT: 3306
+
+      VALKEY_HOST: valkey
+      VALKEY_PORT: 6379
+
+      OPENSEARCH_HOST: opensearch
+      OPENSEARCH_PORT: 9200
+
     depends_on:
+
       db:
         condition: service_healthy
 
@@ -180,10 +192,11 @@ services:
     restart: unless-stopped
 
     depends_on:
-      - php
+      php:
+        condition: service_started
 
     ports:
-      - "${NGINX_PORT}:80"
+      - "${NGINX_PORT:-8080}:80"
 
     volumes:
       - magento_app:/var/www/html:ro
@@ -194,11 +207,19 @@ services:
       - magento
 
 
+# ==========================================================
+# NETWORKS
+# ==========================================================
+
 networks:
 
   magento:
     driver: bridge
 
+
+# ==========================================================
+# VOLUMES
+# ==========================================================
 
 volumes:
 
