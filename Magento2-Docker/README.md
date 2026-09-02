@@ -51,7 +51,7 @@ export COMPOSER_AUTH='{
     }
   }
 }
-```bash
+
 
 # 3. Start the Application
 
