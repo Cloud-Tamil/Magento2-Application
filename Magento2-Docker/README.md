@@ -50,67 +50,8 @@ export COMPOSER_AUTH='{
       "password": "YOUR_PRIVATE_KEY"
     }
   }
-}'
-
-# 🔐 Magento Docker — Access, Commands & Troubleshooting Guide
-
-This document provides the commands required to access, verify, troubleshoot, reset, and maintain the Magento 2.4.8-p5 Docker environment.
-
----
-
-# 1. Architecture
-
-```text
-                         Browser
-                            │
-                            │ HTTP :8080
-                            ▼
-                    ┌────────────────┐
-                    │     NGINX      │
-                    │   Port :80     │
-                    └───────┬────────┘
-                            │
-                            │ FastCGI :9000
-                            ▼
-                    ┌────────────────┐
-                    │   Magento PHP  │
-                    │    PHP-FPM     │
-                    └───────┬────────┘
-                            │
-             ┌──────────────┼──────────────┐
-             │              │              │
-             ▼              ▼              ▼
-       ┌──────────┐   ┌──────────┐   ┌─────────────┐
-       │ MariaDB  │   │  Valkey  │   │ OpenSearch  │
-       │  :3306   │   │  :6379   │   │    :9200    │
-       └──────────┘   └──────────┘   └─────────────┘
-```
-
----
-
-# 2. Project Structure
-
-```text
-Test-Magento2/
-│
-├── docker-compose.yml
-├── .env
-├── .env.example
-├── .gitignore
-├── .dockerignore
-│
-└── docker/
-    │
-    ├── php/
-    │   ├── Dockerfile
-    │   ├── php.ini
-    │   └── entrypoint.sh
-    │
-    └── nginx/
-        └── default.conf
-```
-
----
+}
+```bash
 
 # 3. Start the Application
 
