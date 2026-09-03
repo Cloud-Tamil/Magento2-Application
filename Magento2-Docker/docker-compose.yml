@@ -6,7 +6,9 @@ services:
 
   db:
     image: mariadb:11.8
+
     container_name: magento-db
+
     restart: unless-stopped
 
     environment:
@@ -15,25 +17,20 @@ services:
       MARIADB_PASSWORD: ${MYSQL_PASSWORD}
       MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
 
-    ports:
-      - "${MYSQL_HOST_PORT:-3306}:3306"
-
-    volumes:
-      - mariadb_data:/var/lib/mysql
-
     command:
-      - --max_allowed_packet=128M
-      - --innodb_buffer_pool_size=512M
+      - --max_allowed_packet=64M
+      - --innodb-buffer-pool-size=512M
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_general_ci
+
+    volumes:
+      - db_data:/var/lib/mysql
 
     healthcheck:
       test:
         [
-          "CMD",
-          "healthcheck.sh",
-          "--connect",
-          "--innodb_initialized"
+          "CMD-SHELL",
+          "mariadb-admin ping -h 127.0.0.1 -u root -p$${MARIADB_ROOT_PASSWORD} --silent"
         ]
       interval: 10s
       timeout: 5s
@@ -48,21 +45,20 @@ services:
   # VALKEY
   # ==========================================================
 
-  valkey:
+  redis:
     image: valkey/valkey:8.1
-    container_name: magento-valkey
+
+    container_name: magento-redis
+
     restart: unless-stopped
 
     command:
       - valkey-server
       - --appendonly
-      - "yes"
-
-    ports:
-      - "${VALKEY_HOST_PORT:-6379}:6379"
+      - yes
 
     volumes:
-      - valkey_data:/data
+      - redis_data:/data
 
     healthcheck:
       test:
@@ -85,17 +81,20 @@ services:
   # ==========================================================
 
   opensearch:
-    image: opensearchproject/opensearch:3.3.0
+    image: opensearchproject/opensearch:3
+
     container_name: magento-opensearch
+
     restart: unless-stopped
 
     environment:
       discovery.type: single-node
 
-      DISABLE_SECURITY_PLUGIN: "true"
       DISABLE_INSTALL_DEMO_CONFIG: "true"
 
-      OPENSEARCH_JAVA_OPTS: ${OPENSEARCH_JAVA_OPTS}
+      DISABLE_SECURITY_PLUGIN: "true"
+
+      OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
 
       bootstrap.memory_lock: "true"
 
@@ -105,7 +104,7 @@ services:
         hard: -1
 
     ports:
-      - "${OPENSEARCH_HOST_PORT:-9200}:9200"
+      - "${OPENSEARCH_HTTP_PORT}:9200"
 
     volumes:
       - opensearch_data:/usr/share/opensearch/data
@@ -114,7 +113,7 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fsS http://localhost:9200/_cluster/health >/dev/null || exit 1"
+          "curl -fs http://127.0.0.1:9200/_cluster/health >/dev/null"
         ]
       interval: 15s
       timeout: 10s
@@ -126,63 +125,32 @@ services:
 
 
   # ==========================================================
-  # PHP-FPM / MAGENTO
+  # PHP / MAGENTO
   # ==========================================================
 
   php:
     build:
-      context: .
-      dockerfile: docker/php/Dockerfile
-
-      args:
-        PHP_VERSION: "8.4"
-        COMPOSER_VERSION: "2.10"
-        MAGENTO_VERSION: "${MAGENTO_VERSION}"
+      context: ./docker/php
 
     container_name: magento-php
+
     restart: unless-stopped
 
     env_file:
       - .env
 
-    environment:
-      MYSQL_HOST: db
-      MYSQL_PORT: 3306
-
-      VALKEY_HOST: valkey
-      VALKEY_PORT: 6379
-
-      OPENSEARCH_HOST: opensearch
-      OPENSEARCH_PORT: 9200
-
-      MAGENTO_VERSION: ${MAGENTO_VERSION}
-      MAGENTO_BASE_URL: ${MAGENTO_BASE_URL}
-
     volumes:
-      # IMPORTANT:
-      # Magento source lives on the host under ./src
       - ./src:/var/www/html
 
     depends_on:
       db:
         condition: service_healthy
 
-      valkey:
+      redis:
         condition: service_healthy
 
       opensearch:
         condition: service_healthy
-
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "php-fpm -t >/dev/null 2>&1"
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
 
     networks:
       - magento
@@ -194,31 +162,46 @@ services:
 
   nginx:
     image: nginx:1.30
+
     container_name: magento-nginx
+
     restart: unless-stopped
 
-    depends_on:
-      php:
-        condition: service_healthy
-
     ports:
-      - "${NGINX_PORT:-8080}:80"
+      - "${NGINX_PORT}:80"
 
     volumes:
       - ./src:/var/www/html:ro
-
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
 
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "curl -fsS http://localhost/ >/dev/null || exit 1"
-        ]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
+    depends_on:
+      php:
+        condition: service_started
+
+    networks:
+      - magento
+
+
+  # ==========================================================
+  # VARNISH
+  # ==========================================================
+
+  varnish:
+    image: varnish:8
+
+    container_name: magento-varnish
+
+    restart: unless-stopped
+
+    ports:
+      - "${VARNISH_PORT}:80"
+
+    volumes:
+      - ./docker/varnish/default.vcl:/etc/varnish/default.vcl:ro
+
+    depends_on:
+      nginx:
+        condition: service_started
 
     networks:
       - magento
@@ -231,21 +214,17 @@ services:
 networks:
 
   magento:
-    name: magento-network
     driver: bridge
 
 
 # ==========================================================
-# PERSISTENT DATA
+# VOLUMES
 # ==========================================================
 
 volumes:
 
-  mariadb_data:
-    name: magento-mariadb-data
+  db_data:
 
-  valkey_data:
-    name: magento-valkey-data
+  redis_data:
 
   opensearch_data:
-    name: magento-opensearch-data
