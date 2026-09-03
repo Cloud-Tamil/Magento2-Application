@@ -4,6 +4,15 @@ set -Eeuo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+
+echo
+echo "Stopping Magento Docker..."
+echo
+
+
 docker compose stop
 
-docker compose ps
+
+echo
+echo "Magento Docker stack stopped."
+echo
