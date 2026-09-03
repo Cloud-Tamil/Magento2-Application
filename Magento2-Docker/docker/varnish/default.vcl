@@ -1,10 +1,6 @@
 vcl 4.1;
 
 
-# ============================================================
-# BACKEND
-# ============================================================
-
 backend default {
 
     .host = "nginx";
@@ -14,49 +10,13 @@ backend default {
     .first_byte_timeout = 600s;
 
     .between_bytes_timeout = 60s;
-
 }
 
-
-# ============================================================
-# PURGE ACL
-# ============================================================
-
-acl purge {
-
-    "localhost";
-
-    "127.0.0.1";
-
-}
-
-
-# ============================================================
-# REQUEST PROCESSING
-# ============================================================
 
 sub vcl_recv {
 
-
     # --------------------------------------------------------
-    # PURGE
-    # --------------------------------------------------------
-
-    if (req.method == "PURGE") {
-
-        if (client.ip !~ purge) {
-
-            return (synth(405, "Not allowed"));
-
-        }
-
-        return (purge);
-
-    }
-
-
-    # --------------------------------------------------------
-    # UNSUPPORTED METHODS
+    # Only supported HTTP methods
     # --------------------------------------------------------
 
     if (
@@ -70,12 +30,11 @@ sub vcl_recv {
     ) {
 
         return (pipe);
-
     }
 
 
     # --------------------------------------------------------
-    # ONLY CACHE GET / HEAD
+    # Do not cache non GET/HEAD
     # --------------------------------------------------------
 
     if (
@@ -84,68 +43,64 @@ sub vcl_recv {
     ) {
 
         return (pass);
-
     }
 
 
     # --------------------------------------------------------
-    # AUTHENTICATED REQUESTS
+    # Authorization
     # --------------------------------------------------------
 
     if (req.http.Authorization) {
 
         return (pass);
-
     }
 
 
     # --------------------------------------------------------
-    # SESSION / CUSTOMER COOKIES
+    # Magento sessions
     # --------------------------------------------------------
 
     if (
-        req.http.Cookie ~ "PHPSESSID" ||
-        req.http.Cookie ~ "private_content_version" ||
-        req.http.Cookie ~ "section_data_ids" ||
-        req.http.Cookie ~ "customer_auth"
+        req.http.Cookie ~ "PHPSESSID"
     ) {
 
         return (pass);
-
     }
 
 
     # --------------------------------------------------------
-    # DYNAMIC MAGENTO AREAS
+    # Magento dynamic pages
     # --------------------------------------------------------
 
     if (
-        req.url ~ "^/checkout" ||
-        req.url ~ "^/customer" ||
-        req.url ~ "^/wishlist" ||
+        req.url ~ "^/(checkout|customer|wishlist)"
+    ) {
+
+        return (pass);
+    }
+
+
+    # --------------------------------------------------------
+    # Search
+    # --------------------------------------------------------
+
+    if (
         req.url ~ "^/catalogsearch"
     ) {
 
         return (pass);
-
     }
 
 
-    # --------------------------------------------------------
-    # CACHE
-    # --------------------------------------------------------
-
     return (hash);
-
 }
 
 
-# ============================================================
-# BACKEND RESPONSE
-# ============================================================
-
 sub vcl_backend_response {
 
+    # --------------------------------------------------------
+    # Never cache errors
+    # --------------------------------------------------------
 
     if (beresp.status >= 400) {
 
@@ -154,34 +109,14 @@ sub vcl_backend_response {
         set beresp.uncacheable = true;
 
         return (deliver);
-
     }
 
+
+    # --------------------------------------------------------
+    # Grace period
+    # --------------------------------------------------------
 
     set beresp.grace = 3d;
 
     return (deliver);
-
-}
-
-
-# ============================================================
-# RESPONSE
-# ============================================================
-
-sub vcl_deliver {
-
-
-    if (obj.hits > 0) {
-
-        set resp.http.X-Cache = "HIT";
-
-    }
-
-    else {
-
-        set resp.http.X-Cache = "MISS";
-
-    }
-
 }
