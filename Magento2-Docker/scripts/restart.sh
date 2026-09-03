@@ -8,8 +8,4 @@ docker compose down
 
 docker compose up -d
 
-echo
-echo "Magento Docker stack restarted."
-echo
-
 docker compose ps
