@@ -1,348 +1,244 @@
 services:
 
   # ==========================================================
-  # DATABASE
+  # DATABASE - MariaDB
   # ==========================================================
 
   db:
-
     image: mariadb:11.8
-
     container_name: magento-db
-
     restart: unless-stopped
 
     environment:
-
       MARIADB_DATABASE: ${MYSQL_DATABASE}
-
       MARIADB_USER: ${MYSQL_USER}
-
       MARIADB_PASSWORD: ${MYSQL_PASSWORD}
-
       MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
 
     command:
-
       - --max_allowed_packet=64M
-
       - --innodb-buffer-pool-size=512M
-
       - --character-set-server=utf8mb4
-
       - --collation-server=utf8mb4_general_ci
 
     volumes:
-
       - db_data:/var/lib/mysql
 
     healthcheck:
-
       test:
         [
           "CMD-SHELL",
           "mariadb-admin ping -h 127.0.0.1 -u root -p$${MARIADB_ROOT_PASSWORD} --silent"
         ]
-
       interval: 10s
-
       timeout: 5s
-
       retries: 30
-
       start_period: 30s
 
     networks:
-
       - magento
 
 
   # ==========================================================
-  # VALKEY
+  # CACHE - Valkey
   # ==========================================================
 
   redis:
-
     image: valkey/valkey:8.1
-
     container_name: magento-redis
-
     restart: unless-stopped
 
     command:
-
       - valkey-server
       - --appendonly
       - "yes"
 
     volumes:
-
       - redis_data:/data
 
     healthcheck:
-
       test:
         [
           "CMD",
           "valkey-cli",
           "ping"
         ]
-
       interval: 10s
-
       timeout: 5s
-
       retries: 30
-
       start_period: 10s
 
     networks:
-
       - magento
 
 
   # ==========================================================
-  # OPENSEARCH
+  # SEARCH - OpenSearch
   # ==========================================================
 
   opensearch:
-
     image: opensearchproject/opensearch:3
-
     container_name: magento-opensearch
-
     restart: unless-stopped
 
     environment:
-
       discovery.type: single-node
-
       DISABLE_INSTALL_DEMO_CONFIG: "true"
-
       DISABLE_SECURITY_PLUGIN: "true"
-
       OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
-
       bootstrap.memory_lock: "true"
 
     ulimits:
-
       memlock:
-
         soft: -1
-
         hard: -1
 
     ports:
-
       - "${OPENSEARCH_HTTP_PORT}:9200"
 
     volumes:
-
       - opensearch_data:/usr/share/opensearch/data
 
     healthcheck:
-
       test:
         [
           "CMD-SHELL",
           "curl -fs http://127.0.0.1:9200/_cluster/health >/dev/null"
         ]
-
       interval: 15s
-
       timeout: 10s
-
       retries: 30
-
       start_period: 60s
 
     networks:
-
       - magento
 
 
   # ==========================================================
-  # PHP-FPM / MAGENTO
+  # APPLICATION - Magento PHP-FPM
   # ==========================================================
 
   php:
-
     build:
-
       context: ./docker/php
 
-      args:
-
-        COMPOSER_VERSION: "2.10"
-
     container_name: magento-php
-
     restart: unless-stopped
 
     env_file:
-
       - .env
 
     volumes:
-
       - ./src:/var/www/html
 
-    depends_on:
-
-      db:
-
-        condition: service_healthy
-
-      redis:
-
-        condition: service_healthy
-
-      opensearch:
-
-        condition: service_healthy
-
     healthcheck:
-
       test:
         [
           "CMD-SHELL",
-          "php-fpm -t >/dev/null 2>&1"
+          "php-fpm -t"
         ]
-
       interval: 15s
-
       timeout: 5s
-
       retries: 10
+      start_period: 20s
+
+    depends_on:
+      db:
+        condition: service_healthy
+
+      redis:
+        condition: service_healthy
+
+      opensearch:
+        condition: service_healthy
 
     networks:
-
       - magento
 
 
   # ==========================================================
-  # NGINX
+  # WEB SERVER - Nginx
   # ==========================================================
 
   nginx:
-
     image: nginx:1.30
-
     container_name: magento-nginx
-
     restart: unless-stopped
 
     ports:
-
       - "${NGINX_PORT}:80"
 
     volumes:
-
       - ./src:/var/www/html:ro
-
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
 
-    depends_on:
-
-      php:
-
-        condition: service_healthy
-
     healthcheck:
-
       test:
         [
           "CMD-SHELL",
           "curl -fs http://127.0.0.1/ >/dev/null"
         ]
-
       interval: 15s
-
       timeout: 5s
-
       retries: 10
+      start_period: 20s
+
+    depends_on:
+      php:
+        condition: service_healthy
 
     networks:
-
       - magento
 
 
   # ==========================================================
-  # VARNISH
+  # HTTP CACHE - Varnish
   # ==========================================================
 
   varnish:
-
     image: varnish:8
-
     container_name: magento-varnish
-
     restart: unless-stopped
 
     ports:
-
       - "${VARNISH_PORT}:80"
 
     volumes:
-
       - ./docker/varnish/default.vcl:/etc/varnish/default.vcl:ro
 
-    depends_on:
-
-      nginx:
-
-        condition: service_healthy
-
-    command:
-
-      - varnishd
-      - -F
-      - -f
-      - /etc/varnish/default.vcl
-      - -a
-      - :80
-      - -s
-      - malloc,256m
-
     healthcheck:
-
       test:
         [
           "CMD-SHELL",
-          "curl -fs http://127.0.0.1:80/ >/dev/null"
+          "varnishadm ping >/dev/null 2>&1"
         ]
-
       interval: 15s
-
       timeout: 5s
-
       retries: 10
+      start_period: 20s
+
+    depends_on:
+      nginx:
+        condition: service_healthy
 
     networks:
-
       - magento
 
 
-# ============================================================
+# ==========================================================
 # NETWORK
-# ============================================================
+# ==========================================================
 
 networks:
-
   magento:
-
     driver: bridge
 
 
-# ============================================================
-# PERSISTENT STORAGE
-# ============================================================
+# ==========================================================
+# PERSISTENT VOLUMES
+# ==========================================================
 
 volumes:
-
   db_data:
-
   redis_data:
-
   opensearch_data:
