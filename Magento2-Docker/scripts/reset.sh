@@ -2,43 +2,55 @@
 
 set -Eeuo pipefail
 
+
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
+
 echo
-echo "=================================================="
-echo " WARNING"
-echo "=================================================="
+echo "WARNING!"
+echo "This will delete:"
 echo
-echo "This will DELETE:"
-echo
-echo "  Docker containers"
-echo "  Magento database"
-echo "  Valkey data"
-echo "  OpenSearch data"
-echo
-echo "Magento source under src/ will also be removed."
+echo "  - Docker containers"
+echo "  - Docker volumes"
+echo "  - Magento source"
+echo "  - Database"
+echo "  - Valkey data"
+echo "  - OpenSearch data"
 echo
 
-read -r -p "Type DELETE to continue: " ANSWER
+
+read -r -p \
+    "Type DELETE to continue: " \
+    ANSWER
+
 
 if [[ "$ANSWER" != "DELETE" ]]; then
 
-    echo
-    echo "Cancelled."
+    echo "Reset cancelled."
 
     exit 0
 
 fi
 
+
+docker compose down \
+    --volumes \
+    --remove-orphans
+
+
+find src \
+    -mindepth 1 \
+    -maxdepth 1 \
+    -exec rm -rf {} +
+
+
+mkdir -p src
+
+
 echo
-echo "Stopping containers..."
 
-docker compose down -v --remove-orphans
+echo "============================================================"
 
-echo
-echo "Removing Magento source..."
+echo "RESET COMPLETED"
 
-rm -rf src/*
-
-echo
-echo "Reset completed."
+echo "============================================================"
