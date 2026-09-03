@@ -2,23 +2,14 @@ FROM php:8.4-fpm-bookworm
 
 ARG COMPOSER_VERSION=2.10
 
-ENV COMPOSER_ALLOW_SUPERUSER=1 \
-    COMPOSER_HOME=/tmp/composer
-
-WORKDIR /var/www/html
-
-
-# ==========================================================
-# SYSTEM PACKAGES
-# ==========================================================
+ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y \
     git \
+    curl \
     unzip \
     zip \
-    curl \
     wget \
-    ca-certificates \
     libicu-dev \
     libfreetype6-dev \
     libjpeg62-turbo-dev \
@@ -30,79 +21,58 @@ RUN apt-get update && apt-get install -y \
     libonig-dev \
     libcurl4-openssl-dev \
     libssl-dev \
+    libsodium-dev \
     default-mysql-client \
     procps \
-    netcat-openbsd \
-    gosu \
     && rm -rf /var/lib/apt/lists/*
 
-
-# ==========================================================
-# PHP EXTENSIONS
-# ==========================================================
-
 RUN docker-php-ext-configure gd \
-        --with-freetype \
-        --with-jpeg \
-        --with-webp \
-    && docker-php-ext-install -j"$(nproc)" \
-        bcmath \
-        calendar \
-        exif \
-        ftp \
-        gd \
-        intl \
-        mysqli \
-        opcache \
-        pcntl \
-        pdo_mysql \
-        soap \
-        sockets \
-        xsl \
-        zip
+    --with-freetype \
+    --with-jpeg \
+    --with-webp
 
-
-# ==========================================================
-# REDIS/VALKEY PHP EXTENSION
-# ==========================================================
+RUN docker-php-ext-install -j"$(nproc)" \
+    bcmath \
+    ctype \
+    curl \
+    ftp \
+    dom \
+    fileinfo \
+    gd \
+    intl \
+    mbstring \
+    mysqli \
+    opcache \
+    pcntl \
+    pdo_mysql \
+    soap \
+    sockets \
+    sodium \
+    xsl \
+    zip
 
 RUN pecl install redis \
     && docker-php-ext-enable redis
 
-
-# ==========================================================
-# COMPOSER
-# ==========================================================
-
 COPY --from=composer:2.10 /usr/bin/composer /usr/bin/composer
 
+COPY php.ini /usr/local/etc/php/conf.d/zz-magento.ini
 
-# ==========================================================
-# PHP CONFIG
-# ==========================================================
+COPY opcache.ini /usr/local/etc/php/conf.d/zz-opcache.ini
 
-COPY docker/php/php.ini \
-    /usr/local/etc/php/conf.d/magento.ini
+COPY www.conf /usr/local/etc/php-fpm.d/www.conf
 
+WORKDIR /var/www/html
 
-# ==========================================================
-# ENTRYPOINT
-# ==========================================================
+RUN mkdir -p \
+    /var/www/html/generated \
+    /var/www/html/var \
+    /var/www/html/pub/static \
+    /var/www/html/pub/media \
+    /var/www/html/app/etc
 
-COPY docker/php/entrypoint.sh \
-    /usr/local/bin/entrypoint.sh
+RUN chown -R www-data:www-data /var/www/html
 
-RUN chmod +x /usr/local/bin/entrypoint.sh
-
-
-# ==========================================================
-# DIRECTORY
-# ==========================================================
-
-RUN mkdir -p /var/www/html \
-    && chown -R www-data:www-data /var/www/html
-
-
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+EXPOSE 9000
 
 CMD ["php-fpm", "-F"]
