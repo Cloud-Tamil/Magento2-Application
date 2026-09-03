@@ -6,5 +6,4 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 docker compose stop
 
-echo
-echo "Magento Docker stack stopped."
+docker compose ps
