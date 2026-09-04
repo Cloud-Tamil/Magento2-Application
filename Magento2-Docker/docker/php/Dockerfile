@@ -1,12 +1,16 @@
 FROM php:8.4-fpm-bookworm
 
 # ==========================================================
-# Composer
+# ENVIRONMENT
+# ==========================================================
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ==========================================================
+# COMPOSER
 # ==========================================================
 
 COPY --from=composer:2.10 /usr/bin/composer /usr/bin/composer
-
-ENV DEBIAN_FRONTEND=noninteractive
 
 # ==========================================================
 # SYSTEM PACKAGES
@@ -14,8 +18,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        git \
+        bash \
+        ca-certificates \
         curl \
+        git \
         unzip \
         zip \
         wget \
@@ -35,7 +41,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ==========================================================
-# GD
+# GD CONFIGURATION
 # ==========================================================
 
 RUN docker-php-ext-configure gd \
@@ -53,6 +59,7 @@ RUN docker-php-ext-install -j"$(nproc)" \
         curl \
         dom \
         fileinfo \
+        ftp \
         gd \
         intl \
         mbstring \
@@ -67,7 +74,7 @@ RUN docker-php-ext-install -j"$(nproc)" \
         zip
 
 # ==========================================================
-# Redis / Valkey PHP Extension
+# REDIS / VALKEY PHP EXTENSION
 # ==========================================================
 
 RUN pecl install redis \
@@ -105,5 +112,20 @@ RUN mkdir -p \
 # ==========================================================
 
 EXPOSE 9000
+
+# ==========================================================
+# HEALTH CHECK
+# ==========================================================
+
+HEALTHCHECK \
+    --interval=30s \
+    --timeout=10s \
+    --start-period=20s \
+    --retries=5 \
+    CMD php-fpm -t && pgrep -x php-fpm >/dev/null || exit 1
+
+# ==========================================================
+# START PHP-FPM
+# ==========================================================
 
 CMD ["php-fpm", "-F"]
