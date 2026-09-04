@@ -8,24 +8,33 @@ set -a
 source .env
 set +a
 
+
 PASS=0
 FAIL=0
 
-check_pass() {
+
+pass() {
+
     echo "PASS: $1"
+
     PASS=$((PASS + 1))
 }
 
-check_fail() {
+
+fail() {
+
     echo "FAIL: $1"
+
     FAIL=$((FAIL + 1))
 }
+
 
 echo
 echo "=================================================="
 echo " Magento Docker Health Check"
 echo "=================================================="
 echo
+
 
 # ==========================================================
 # CONTAINERS
@@ -34,6 +43,7 @@ echo
 echo "[1] Containers"
 
 docker compose ps
+
 
 # ==========================================================
 # DATABASE
@@ -50,10 +60,15 @@ if docker compose exec -T db \
     --silent \
     >/dev/null 2>&1
 then
-    check_pass "MariaDB"
+
+    pass "MariaDB"
+
 else
-    check_fail "MariaDB"
+
+    fail "MariaDB"
+
 fi
+
 
 # ==========================================================
 # VALKEY
@@ -66,10 +81,15 @@ if docker compose exec -T redis \
     valkey-cli ping 2>/dev/null |
     grep -q PONG
 then
-    check_pass "Valkey"
+
+    pass "Valkey"
+
 else
-    check_fail "Valkey"
+
+    fail "Valkey"
+
 fi
+
 
 # ==========================================================
 # OPENSEARCH
@@ -78,14 +98,19 @@ fi
 echo
 echo "[4] OpenSearch"
 
-if curl -fs \
+if curl -fsS \
     "http://localhost:${OPENSEARCH_HTTP_PORT}/_cluster/health" \
     >/dev/null 2>&1
 then
-    check_pass "OpenSearch"
+
+    pass "OpenSearch"
+
 else
-    check_fail "OpenSearch"
+
+    fail "OpenSearch"
+
 fi
+
 
 # ==========================================================
 # PHP
@@ -98,80 +123,161 @@ if docker compose exec -T php \
     php -v \
     >/dev/null 2>&1
 then
-    check_pass "PHP"
+
+    pass "PHP"
+
 else
-    check_fail "PHP"
+
+    fail "PHP"
+
 fi
+
+
+# ==========================================================
+# PHP-FPM
+# ==========================================================
+
+echo
+echo "[6] PHP-FPM"
+
+if docker compose exec -T php \
+    php-fpm -t \
+    >/dev/null 2>&1
+then
+
+    pass "PHP-FPM"
+
+else
+
+    fail "PHP-FPM"
+
+fi
+
 
 # ==========================================================
 # MAGENTO
 # ==========================================================
 
 echo
-echo "[6] Magento"
+echo "[7] Magento"
 
 if docker compose exec -T php \
     php bin/magento --version
 then
-    check_pass "Magento"
+
+    pass "Magento"
+
 else
-    check_fail "Magento"
+
+    fail "Magento"
+
 fi
 
+
 # ==========================================================
-# NGINX
+# NGINX HEALTH
 # ==========================================================
 
 echo
-echo "[7] Nginx"
+echo "[8] Nginx health"
 
-if curl -fs \
+if curl -fsS \
     "http://localhost:${NGINX_PORT}/health-check" \
-    >/dev/null 2>&1
+    >/dev/null
 then
-    check_pass "Nginx"
+
+    pass "Nginx"
+
 else
-    check_fail "Nginx"
+
+    fail "Nginx"
+
 fi
+
 
 # ==========================================================
 # NGINX -> PHP
 # ==========================================================
 
 echo
-echo "[8] Nginx -> PHP"
+echo "[9] Nginx -> PHP"
 
-if curl -fs \
-    "http://localhost:${NGINX_PORT}/" \
-    >/dev/null 2>&1
+NGINX_STATUS="$(
+    curl \
+        -s \
+        -o /dev/null \
+        -w "%{http_code}" \
+        "http://localhost:${NGINX_PORT}/"
+)"
+
+
+if [[ "${NGINX_STATUS}" =~ ^[23][0-9][0-9]$ ]]
 then
-    check_pass "Nginx -> PHP"
+
+    pass "Nginx -> PHP HTTP ${NGINX_STATUS}"
+
 else
-    check_fail "Nginx -> PHP"
+
+    fail "Nginx -> PHP HTTP ${NGINX_STATUS}"
+
 fi
 
+
 # ==========================================================
-# VARNISH
+# VARNISH HEALTH
 # ==========================================================
 
 echo
-echo "[9] Varnish"
+echo "[10] Varnish health"
 
-if curl -fs \
-    "http://localhost:${VARNISH_PORT}/" \
-    >/dev/null 2>&1
+if curl -fsS \
+    "http://localhost:${VARNISH_PORT}/health-check" \
+    >/dev/null
 then
-    check_pass "Varnish"
+
+    pass "Varnish"
+
 else
-    check_fail "Varnish"
+
+    fail "Varnish"
+
 fi
 
+
 # ==========================================================
-# VARNISH HEADER
+# VARNISH -> NGINX
 # ==========================================================
 
 echo
-echo "[10] Varnish Cache Header"
+echo "[11] Varnish -> Nginx"
+
+VARNISH_STATUS="$(
+    curl \
+        -s \
+        -o /dev/null \
+        -w "%{http_code}" \
+        "http://localhost:${VARNISH_PORT}/"
+)"
+
+
+if [[ "${VARNISH_STATUS}" =~ ^[23][0-9][0-9]$ ]]
+then
+
+    pass "Varnish -> Nginx HTTP ${VARNISH_STATUS}"
+
+else
+
+    fail "Varnish -> Nginx HTTP ${VARNISH_STATUS}"
+
+fi
+
+
+# ==========================================================
+# VARNISH CACHE HEADER
+# ==========================================================
+
+echo
+echo "[12] Varnish cache header"
 
 CACHE_HEADER="$(
     curl \
@@ -179,21 +285,29 @@ CACHE_HEADER="$(
         -I \
         "http://localhost:${VARNISH_PORT}/" |
         tr -d '\r' |
-        grep -i "^X-Cache:" || true
+        grep -i "^X-Magento-Cache-Debug:" ||
+        true
 )"
 
-if [[ -n "$CACHE_HEADER" ]]; then
-    check_pass "Varnish cache header: ${CACHE_HEADER}"
+
+if [[ -n "${CACHE_HEADER}" ]]
+then
+
+    pass "${CACHE_HEADER}"
+
 else
-    check_fail "Varnish cache header"
+
+    fail "X-Magento-Cache-Debug header"
+
 fi
+
 
 # ==========================================================
 # MAGENTO STORE
 # ==========================================================
 
 echo
-echo "[11] Magento Store"
+echo "[13] Magento Store"
 
 HTTP_CODE="$(
     curl \
@@ -204,11 +318,18 @@ HTTP_CODE="$(
         "http://localhost:${VARNISH_PORT}/"
 )"
 
-if [[ "$HTTP_CODE" =~ ^[23][0-9][0-9]$ ]]; then
-    check_pass "Magento Store HTTP ${HTTP_CODE}"
+
+if [[ "${HTTP_CODE}" =~ ^[23][0-9][0-9]$ ]]
+then
+
+    pass "Magento Store HTTP ${HTTP_CODE}"
+
 else
-    check_fail "Magento Store HTTP ${HTTP_CODE}"
+
+    fail "Magento Store HTTP ${HTTP_CODE}"
+
 fi
+
 
 # ==========================================================
 # RESULT
@@ -221,14 +342,21 @@ echo "=================================================="
 echo
 
 echo "PASS: ${PASS}"
+
 echo "FAIL: ${FAIL}"
 
 echo
 
-if [[ "$FAIL" -gt 0 ]]; then
+
+if [[ "${FAIL}" -gt 0 ]]
+then
+
     echo "Health check FAILED."
+
     exit 1
+
 fi
+
 
 echo "All health checks PASSED."
 echo
