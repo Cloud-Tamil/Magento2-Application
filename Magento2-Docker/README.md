@@ -2,6 +2,20 @@
 
 Production-style local development environment for **Magento Open Source 2.4.8-p5** using Docker Compose.
 
+---
+
+## Changelog / Fixes Applied
+
+This version fixes three issues found in the original setup:
+
+| # | File | Problem | Fix |
+|---|------|---------|-----|
+| 1 | `docker/php/Dockerfile` | `COPY` line for `www.conf` contained stray markdown link syntax (`[www.conf](https://www.conf)`), which is not valid Dockerfile syntax and breaks the build. | Changed to plain `COPY www.conf /usr/local/etc/php-fpm.d/www.conf`. |
+| 2 | `docker-compose.yml` (nginx service) | Healthcheck used `curl`, but the stock `nginx:1.30` image does not ship curl. Nginx would never report healthy, and Varnish (which depends on nginx's health) would never start. | Added `docker/nginx/Dockerfile` (installs curl on top of `nginx:1.30`) and changed the `nginx` service to `build: ./docker/nginx` instead of `image: nginx:1.30`. |
+| 3 | `scripts/health-check.sh` | HTTP status check used `[[ "$HTTP_CODE" =~ ^2|3 ]]`, which bash parses as "starts with 2, OR contains a 3 anywhere" — so a real failure like `503` incorrectly passed. | Changed to `[[ "$HTTP_CODE" =~ ^[23] ]]`. |
+
+---
+
 ## Architecture
 
 ```text
@@ -30,7 +44,7 @@ Production-style local development environment for **Magento Open Source 2.4.8-p
 | MariaDB             | 11.8     |
 | Valkey              | 8.1      |
 | OpenSearch          | 3.x      |
-| nginx               | 1.30     |
+| nginx               | 1.30 (custom image, + curl) |
 | Varnish             | 8.x      |
 | Composer            | 2.10.x   |
 | Docker Compose      | v2       |
@@ -44,6 +58,7 @@ magento2-docker/
 │
 ├── .env
 ├── .env.example
+├── .gitignore
 ├── docker-compose.yml
 ├── README.md
 │
@@ -55,6 +70,7 @@ magento2-docker/
 │   │   └── www.conf
 │   │
 │   ├── nginx/
+│   │   ├── Dockerfile
 │   │   └── default.conf
 │   │
 │   └── varnish/
@@ -153,17 +169,16 @@ Edit:
 nano .env
 ```
 
-Example:
+Key variables:
 
 ```env
 MAGENTO_VERSION=2.4.8-p5
-
 MAGENTO_BASE_URL=http://localhost:8080/
 
 MYSQL_DATABASE=magento
 MYSQL_USER=magento
-MYSQL_PASSWORD=magento
-MYSQL_ROOT_PASSWORD=magento_root
+MYSQL_PASSWORD=change_me
+MYSQL_ROOT_PASSWORD=change_root_me
 
 DB_HOST=db
 DB_PORT=3306
@@ -173,8 +188,8 @@ REDIS_PORT=6379
 
 OPENSEARCH_HOST=opensearch
 OPENSEARCH_PORT=9200
+OPENSEARCH_HTTP_PORT=9200
 
-HTTP_PORT=8080
 NGINX_PORT=8081
 VARNISH_PORT=8080
 
@@ -182,11 +197,17 @@ MAGENTO_ADMIN_FIRSTNAME=Admin
 MAGENTO_ADMIN_LASTNAME=User
 MAGENTO_ADMIN_EMAIL=admin@example.com
 MAGENTO_ADMIN_USER=admin
-MAGENTO_ADMIN_PASSWORD=Admin123!ChangeMe
+MAGENTO_ADMIN_PASSWORD=ChangeMe123!ChangeMe
 MAGENTO_ADMIN_FRONTNAME=admin
+
+COMPOSER_AUTH_PUBLIC_KEY=your_public_key
+COMPOSER_AUTH_PRIVATE_KEY=your_private_key
 ```
 
-> Do not commit `.env` if it contains real passwords or Composer credentials.
+> Do not commit `.env` if it contains real passwords or Composer credentials. `.gitignore` already excludes it.
+
+Get Magento Marketplace Composer keys from:
+`https://commercemarketplace.adobe.com/customer/accessKeys/`
 
 ---
 
@@ -212,7 +233,7 @@ or:
 environment variable ... is not set
 ```
 
-fix the configuration before continuing.
+fix the configuration (usually a missing `.env` variable) before continuing.
 
 ---
 
@@ -276,29 +297,31 @@ For a completely new project, run:
 ./scripts/install-magento.sh
 ```
 
-The installation script should:
+The installation script will:
 
 1. Check Docker
-2. Check environment
+2. Check environment / required variables
 3. Create `src/`
-4. Start infrastructure
-5. Wait for MariaDB
-6. Wait for Valkey
-7. Wait for OpenSearch
-8. Download Magento
-9. Configure Composer authentication
-10. Install Magento
-11. Configure Magento
-12. Configure Redis/Valkey
-13. Configure OpenSearch
-14. Configure Varnish
-15. Run Magento upgrade
-16. Compile Magento
-17. Deploy static content
-18. Reindex Magento
-19. Flush cache
-20. Fix permissions
-21. Run health checks
+4. Build the PHP image
+5. Start MariaDB, Valkey, OpenSearch
+6. Wait for MariaDB
+7. Wait for Valkey
+8. Wait for OpenSearch
+9. Download Magento via Composer
+10. Configure Composer authentication
+11. Start PHP
+12. Install Magento (`setup:install`)
+13. Configure Magento (developer mode)
+14. Configure Valkey cache/page-cache
+15. Configure Valkey sessions
+16. Run `setup:upgrade`
+17. Compile Magento (`setup:di:compile`)
+18. Deploy static content
+19. Reindex Magento
+20. Flush cache
+21. Fix permissions
+22. Start Nginx and Varnish
+23. Print final URLs
 
 ---
 
@@ -314,11 +337,7 @@ Use the clean rebuild procedure below.
 docker compose down --remove-orphans
 ```
 
----
-
 ## Step 2 — Full Reset
-
-Run:
 
 ```bash
 ./scripts/reset.sh
@@ -336,17 +355,17 @@ enter:
 DELETE
 ```
 
-The reset should remove:
+The reset removes:
 
 * Containers
 * Networks
 * Magento volumes
 * Database data
-* Redis/Valkey data
+* Valkey data
 * OpenSearch data
-* Existing Magento installation
+* Existing Magento source in `src/`
 
-> **Warning:** A full reset deletes local Magento database/index/cache data.
+> **Warning:** A full reset deletes local Magento database/index/cache data and source code. This cannot be undone.
 
 ---
 
@@ -376,7 +395,7 @@ Remove unused volumes:
 docker volume prune -f
 ```
 
-Check:
+Check nothing is left over:
 
 ```bash
 docker ps -a
@@ -416,7 +435,7 @@ After resetting:
 docker compose build --no-cache
 ```
 
-This forces Docker to rebuild the PHP/nginx/Varnish images instead of using cached layers.
+This forces Docker to rebuild the PHP and Nginx images (both are custom-built) instead of using cached layers.
 
 Check images:
 
@@ -465,45 +484,24 @@ Then:
 docker compose logs --tail=100
 ```
 
-For a specific service:
+Per-service:
 
 ```bash
 docker compose logs db
-```
-
-```bash
 docker compose logs redis
-```
-
-```bash
 docker compose logs opensearch
-```
-
-```bash
 docker compose logs php
-```
-
-```bash
 docker compose logs nginx
-```
-
-```bash
 docker compose logs varnish
 ```
 
-Follow logs:
+Follow logs live:
 
 ```bash
 docker compose logs -f
 ```
 
-Press:
-
-```text
-CTRL+C
-```
-
-to stop following logs.
+Press `CTRL+C` to stop following.
 
 ---
 
@@ -513,11 +511,11 @@ Run:
 
 ```bash
 docker compose exec db \
-mariadb-admin ping \
--h 127.0.0.1 \
--u root \
--p"${MYSQL_ROOT_PASSWORD}" \
---silent
+  mariadb-admin ping \
+  -h 127.0.0.1 \
+  -u root \
+  -p"${MYSQL_ROOT_PASSWORD}" \
+  --silent
 ```
 
 Expected:
@@ -526,13 +524,10 @@ Expected:
 mysqld is alive
 ```
 
-You can also connect:
+Connect interactively:
 
 ```bash
-docker compose exec db \
-mariadb \
--u root \
--p"${MYSQL_ROOT_PASSWORD}"
+docker compose exec db mariadb -u root -p"${MYSQL_ROOT_PASSWORD}"
 ```
 
 Check databases:
@@ -551,8 +546,6 @@ exit
 
 # 16. Verify Valkey
 
-Run:
-
 ```bash
 docker compose exec redis valkey-cli ping
 ```
@@ -563,10 +556,18 @@ Expected:
 PONG
 ```
 
-Check Valkey:
+Check server info:
 
 ```bash
 docker compose exec redis valkey-cli info server
+```
+
+Check keys in a specific DB (0 = cache, 1 = page cache, 2 = sessions):
+
+```bash
+docker compose exec redis valkey-cli -n 0 dbsize
+docker compose exec redis valkey-cli -n 1 dbsize
+docker compose exec redis valkey-cli -n 2 dbsize
 ```
 
 ---
@@ -585,13 +586,13 @@ Check cluster health:
 curl http://localhost:9200/_cluster/health
 ```
 
-For readable JSON:
+Readable JSON:
 
 ```bash
 curl -s http://localhost:9200/_cluster/health | python3 -m json.tool
 ```
 
-Expected status for the single-node development environment:
+Expected status for the single-node dev environment:
 
 ```json
 {
@@ -599,13 +600,13 @@ Expected status for the single-node development environment:
 }
 ```
 
-Also check:
+Nodes:
 
 ```bash
 curl http://localhost:9200/_cat/nodes?v
 ```
 
-And:
+Indices:
 
 ```bash
 curl http://localhost:9200/_cat/indices?v
@@ -614,8 +615,6 @@ curl http://localhost:9200/_cat/indices?v
 ---
 
 # 18. Verify PHP
-
-Run:
 
 ```bash
 docker compose exec php php -v
@@ -627,16 +626,22 @@ Expected:
 PHP 8.4.x
 ```
 
-Check loaded modules:
+Loaded modules:
 
 ```bash
 docker compose exec php php -m
 ```
 
-Check PHP configuration:
+PHP configuration:
 
 ```bash
 docker compose exec php php --ini
+```
+
+Confirm the redis extension loaded:
+
+```bash
+docker compose exec php php -m | grep -i redis
 ```
 
 ---
@@ -657,8 +662,6 @@ Composer version 2.10.x
 
 # 20. Verify Magento
 
-After installation:
-
 ```bash
 docker compose exec php php bin/magento --version
 ```
@@ -669,13 +672,13 @@ Expected:
 Magento CLI 2.4.8-p5
 ```
 
-Check Magento modules:
+Module status:
 
 ```bash
 docker compose exec php php bin/magento module:status
 ```
 
-Check Magento mode:
+Deploy mode:
 
 ```bash
 docker compose exec php php bin/magento deploy:mode:show
@@ -685,11 +688,10 @@ docker compose exec php php bin/magento deploy:mode:show
 
 # 21. Verify Magento Configuration
 
-Check Magento configuration:
+Base URL:
 
 ```bash
-docker compose exec php \
-php bin/magento config:show web/unsecure/base_url
+docker compose exec php php bin/magento config:show web/unsecure/base_url
 ```
 
 Expected:
@@ -698,17 +700,10 @@ Expected:
 http://localhost:8080/
 ```
 
-Check secure base URL:
+Secure base URL (HTTP-only local environment, so it matches unsecure):
 
 ```bash
-docker compose exec php \
-php bin/magento config:show web/secure/base_url
-```
-
-For this HTTP-only local environment:
-
-```text
-http://localhost:8080/
+docker compose exec php php bin/magento config:show web/secure/base_url
 ```
 
 ---
@@ -721,25 +716,45 @@ Nginx is exposed directly on:
 http://localhost:8081
 ```
 
-Open in your browser:
-
-```text
-http://localhost:8081
-```
-
-Or test using curl:
+Test with curl (curl is now baked into the custom Nginx image):
 
 ```bash
 curl -I http://localhost:8081
 ```
 
-Expected response should contain something similar to:
+Expected:
 
 ```text
 HTTP/1.1 200 OK
 ```
 
-If Magento returns a redirect, that can also be normal depending on the configuration.
+A redirect can also be normal depending on Magento's configured base URL.
+
+Check the dedicated health endpoint used by `health-check.sh`:
+
+```bash
+curl -I http://localhost:8081/health-check
+```
+
+Expected:
+
+```text
+HTTP/1.1 200 OK
+OK
+```
+
+Test the Nginx config syntax inside the container:
+
+```bash
+docker compose exec nginx nginx -t
+```
+
+Expected:
+
+```text
+syntax is ok
+test is successful
+```
 
 ---
 
@@ -757,99 +772,66 @@ Test:
 curl -I http://localhost:8080
 ```
 
-Check Varnish headers:
-
-```bash
-curl -I http://localhost:8080
-```
-
-Look for:
+Look for cache-related headers:
 
 ```text
 Via:
 X-Magento-Cache-Debug:
+Age:
 ```
 
-or other cache-related headers depending on your VCL/configuration.
+Check the Varnish admin ping (used by its healthcheck):
+
+```bash
+docker compose exec varnish varnishadm ping
+```
 
 ---
 
 # 24. Open Magento Store
 
-Open:
+Open in your browser:
 
 ```text
 http://localhost:8080
 ```
 
-This is the main Magento URL.
-
-Architecture:
+Request path:
 
 ```text
-Browser
-   |
-   v
-Varnish :8080
-   |
-   v
-Nginx
-   |
-   v
-PHP-FPM
-   |
-   +---- MariaDB
-   +---- Valkey
-   +---- OpenSearch
+Browser -> Varnish (:8080) -> Nginx -> PHP-FPM -> MariaDB / Valkey / OpenSearch
 ```
 
 ---
 
 # 25. Open Magento Admin
 
-The default admin URL is:
+Default admin URL:
 
 ```text
 http://localhost:8080/admin
 ```
 
-If you configured:
+If you set a custom `MAGENTO_ADMIN_FRONTNAME`, use that instead of `admin`.
 
-```env
-MAGENTO_ADMIN_FRONTNAME=admin
-```
-
-open:
+Login:
 
 ```text
-http://localhost:8080/admin
-```
-
-Login using:
-
-```text
-Username:
-admin
-```
-
-Password:
-
-```text
-Value configured in MAGENTO_ADMIN_PASSWORD
+Username: value of MAGENTO_ADMIN_USER
+Password: value of MAGENTO_ADMIN_PASSWORD
 ```
 
 ---
 
 # 26. Find Magento Admin URL
 
-If you are not sure about the admin frontname:
+If you're not sure about the admin frontname:
 
 ```bash
-docker compose exec php \
-php bin/magento info:adminuri
+docker compose exec php php bin/magento info:adminuri
 ```
 
-Example:
+Example output:
 
 ```text
 Admin URI: /admin
@@ -859,125 +841,98 @@ Admin URI: /admin
 
 # 27. Magento Cache
 
-Check cache:
+Check cache status:
 
 ```bash
-docker compose exec php \
-php bin/magento cache:status
+docker compose exec php php bin/magento cache:status
 ```
 
-Flush cache:
+Flush all cache (clears storage completely):
 
 ```bash
-docker compose exec php \
-php bin/magento cache:flush
+docker compose exec php php bin/magento cache:flush
 ```
 
-Clean cache:
+Clean cache (invalidates, keeps storage):
 
 ```bash
-docker compose exec php \
-php bin/magento cache:clean
+docker compose exec php php bin/magento cache:clean
+```
+
+Enable/disable specific cache types:
+
+```bash
+docker compose exec php php bin/magento cache:enable full_page
+docker compose exec php php bin/magento cache:disable full_page
 ```
 
 ---
 
 # 28. Magento Indexers
 
-Check indexers:
+Check indexer status:
 
 ```bash
-docker compose exec php \
-php bin/magento indexer:status
+docker compose exec php php bin/magento indexer:status
 ```
 
-Reindex:
+Reindex everything:
 
 ```bash
-docker compose exec php \
-php bin/magento indexer:reindex
+docker compose exec php php bin/magento indexer:reindex
 ```
 
-Reset indexers:
+Reindex a single indexer:
 
 ```bash
-docker compose exec php \
-php bin/magento indexer:reset
+docker compose exec php php bin/magento indexer:reindex catalog_product_price
+```
+
+Reset indexers (forces full reindex on next run):
+
+```bash
+docker compose exec php php bin/magento indexer:reset
+```
+
+Switch to schedule (cron) mode:
+
+```bash
+docker compose exec php php bin/magento indexer:set-mode schedule
 ```
 
 ---
 
 # 29. Magento Upgrade Commands
 
-Run:
+After pulling code changes or installing a module:
 
 ```bash
-docker compose exec php \
-php bin/magento setup:upgrade
-```
-
-Then:
-
-```bash
-docker compose exec php \
-php bin/magento setup:di:compile
-```
-
-Then:
-
-```bash
-docker compose exec php \
-php bin/magento setup:static-content:deploy -f
-```
-
-Then:
-
-```bash
-docker compose exec php \
-php bin/magento indexer:reindex
-```
-
-Finally:
-
-```bash
-docker compose exec php \
-php bin/magento cache:flush
+docker compose exec php php bin/magento setup:upgrade
+docker compose exec php php bin/magento setup:di:compile
+docker compose exec php php bin/magento setup:static-content:deploy -f
+docker compose exec php php bin/magento indexer:reindex
+docker compose exec php php bin/magento cache:flush
 ```
 
 ---
 
 # 30. Configure Magento Script
 
-If your project contains:
-
-```text
-scripts/configure-magento.sh
-```
-
-run:
-
 ```bash
 ./scripts/configure-magento.sh
 ```
 
-This should configure:
-
-* Base URL
-* Database
-* Valkey
-* OpenSearch
-* Admin settings
-* Magento application settings
+This runs `setup:upgrade`, `setup:di:compile`, static content deploy, reindex, cache flush, fixes permissions, and restarts Nginx/Varnish.
 
 ---
 
 # 31. Generate Varnish Configuration
 
-Run:
-
 ```bash
 ./scripts/generate-varnish.sh
 ```
+
+This uses Magento's own `varnish:vcl:generate` command, saves it to `docker/varnish/generated.vcl`, copies it over `docker/varnish/default.vcl`, and restarts Varnish.
 
 Verify the generated configuration:
 
@@ -985,13 +940,13 @@ Verify the generated configuration:
 cat docker/varnish/default.vcl
 ```
 
-Validate VCL from inside the Varnish container if supported by your image:
+Validate VCL from inside the container:
 
 ```bash
 docker compose exec varnish varnishd -C -f /etc/varnish/default.vcl
 ```
 
-If your Varnish image uses a different configuration path, inspect:
+Inspect the Varnish config directory:
 
 ```bash
 docker compose exec varnish ls -la /etc/varnish/
@@ -1000,8 +955,6 @@ docker compose exec varnish ls -la /etc/varnish/
 ---
 
 # 32. Restart Everything
-
-Use the project script:
 
 ```bash
 ./scripts/restart.sh
@@ -1023,8 +976,6 @@ docker compose ps
 
 # 33. Stop Everything
 
-Recommended:
-
 ```bash
 ./scripts/stop.sh
 ```
@@ -1032,10 +983,16 @@ Recommended:
 Or:
 
 ```bash
-docker compose down
+docker compose stop
 ```
 
-This stops and removes containers but normally preserves named volumes.
+This stops containers but preserves them (and named volumes) so `start.sh` can bring them back quickly.
+
+To fully remove containers (keeping volumes):
+
+```bash
+docker compose down
+```
 
 ---
 
@@ -1061,59 +1018,41 @@ docker compose ps
 
 # 35. View Logs
 
-Use:
-
 ```bash
 ./scripts/logs.sh
 ```
 
-Or:
+All services follow-mode:
 
 ```bash
 docker compose logs -f
 ```
 
-PHP logs:
+Single service:
+
+```bash
+./scripts/logs.sh php
+./scripts/logs.sh nginx
+./scripts/logs.sh db
+./scripts/logs.sh redis
+./scripts/logs.sh opensearch
+./scripts/logs.sh varnish
+```
+
+Or directly:
 
 ```bash
 docker compose logs -f php
-```
-
-Nginx:
-
-```bash
 docker compose logs -f nginx
-```
-
-MariaDB:
-
-```bash
 docker compose logs -f db
-```
-
-Valkey:
-
-```bash
 docker compose logs -f redis
-```
-
-OpenSearch:
-
-```bash
 docker compose logs -f opensearch
-```
-
-Varnish:
-
-```bash
 docker compose logs -f varnish
 ```
 
 ---
 
 # 36. Automated Health Check
-
-Run:
 
 ```bash
 ./scripts/health-check.sh
@@ -1126,8 +1065,7 @@ Expected:
  Magento Docker Health Check
 ==================================================
 
-[1] Docker containers
-
+[1] Containers
 magento-db          Up
 magento-redis       Up
 magento-opensearch  Up
@@ -1136,162 +1074,87 @@ magento-nginx       Up
 magento-varnish     Up
 
 [2] MariaDB
-
-PASS
+PASS: MariaDB
 
 [3] Valkey
-
-PASS
+PASS: Valkey
 
 [4] OpenSearch
+PASS: OpenSearch
 
-PASS
+[5] PHP
+PASS: PHP
 
-[5] Magento
-
+[6] Magento
 Magento CLI 2.4.8-p5
+PASS: Magento
 
-[6] Nginx
+[7] Nginx
+PASS: Nginx
 
-PASS
+[8] Varnish
+PASS: Varnish
 
-[7] Varnish
-
-PASS
-
-[8] Magento Store
-
-PASS
+[9] Magento Store
+PASS: Magento Store HTTP 200
 
 ==================================================
- Health Check Completed
+ Result
 ==================================================
+PASS: 9
+FAIL: 0
+
+All health checks PASSED.
 ```
+
+The script exits with code `1` if any check fails, so it's safe to use in CI.
 
 ---
 
 # 37. Complete Clean Installation
 
-For a completely fresh installation, use this sequence.
-
-## Step 1
+For a completely fresh installation, use this exact sequence.
 
 ```bash
+# Step 1
 cd magento2-docker
-```
 
-## Step 2
-
-```bash
+# Step 2
 chmod +x scripts/*.sh
-```
 
-## Step 3
-
-```bash
+# Step 3
 docker compose config
-```
 
-## Step 4
-
-Stop existing containers:
-
-```bash
+# Step 4 — stop existing containers
 docker compose down --remove-orphans
-```
 
-## Step 5
-
-Reset:
-
-```bash
+# Step 5 — reset (type DELETE when prompted)
 ./scripts/reset.sh
-```
 
-Enter:
-
-```text
-DELETE
-```
-
-## Step 6
-
-Check Docker:
-
-```bash
+# Step 6 — sanity checks
 docker --version
-```
-
-## Step 7
-
-Check Compose:
-
-```bash
 docker compose version
-```
 
-## Step 8
-
-Create source directory:
-
-```bash
+# Step 7 — create source directory
 mkdir -p src
-```
 
-## Step 9
-
-Build from scratch:
-
-```bash
+# Step 8 — build from scratch
 docker compose build --no-cache
-```
 
-## Step 10
-
-Install Magento:
-
-```bash
+# Step 9 — install
 ./scripts/install-magento.sh
-```
 
-## Step 11
-
-Check containers:
-
-```bash
+# Step 10 — verify
 docker compose ps
-```
-
-## Step 12
-
-Run health check:
-
-```bash
 ./scripts/health-check.sh
 ```
 
-## Step 13
-
-Open Store:
+Then open:
 
 ```text
-http://localhost:8080
-```
-
-## Step 14
-
-Open direct Nginx:
-
-```text
-http://localhost:8081
-```
-
-## Step 15
-
-Open Admin:
-
-```text
-http://localhost:8080/admin
+Store: http://localhost:8080
+Admin: http://localhost:8080/admin
+Nginx: http://localhost:8081
 ```
 
 ---
@@ -1302,37 +1165,17 @@ For future development, the complete reset/rebuild sequence is:
 
 ```bash
 docker compose down --volumes --remove-orphans
-```
-
-```bash
 rm -rf src/*
-```
-
-```bash
 mkdir -p src
-```
-
-```bash
 docker compose config
-```
-
-```bash
 docker compose build --no-cache
-```
-
-```bash
 ./scripts/install-magento.sh
-```
-
-```bash
 ./scripts/health-check.sh
 ```
 
 ---
 
 # 39. Check All Ports
-
-Check Docker port mappings:
 
 ```bash
 docker compose ps
@@ -1346,134 +1189,89 @@ Expected:
 9200 -> OpenSearch
 ```
 
-Check OpenSearch:
-
 ```bash
 curl http://localhost:9200
-```
-
-Check Nginx:
-
-```bash
 curl -I http://localhost:8081
-```
-
-Check Varnish:
-
-```bash
 curl -I http://localhost:8080
 ```
 
 ---
 
-# 40. Troubleshooting
+# 40. Troubleshooting — General
 
 ## Problem: Container keeps restarting
 
-Check:
-
 ```bash
 docker compose ps
-```
-
-Then:
-
-```bash
 docker compose logs --tail=200 <service>
 ```
 
-For example:
+Example:
 
 ```bash
 docker compose logs --tail=200 nginx
 ```
 
----
-
-## Problem: Magento PHP container fails
-
-Check:
+## Problem: PHP container fails
 
 ```bash
 docker compose logs --tail=200 php
-```
-
-Enter container:
-
-```bash
 docker compose exec php bash
-```
-
-Check:
-
-```bash
 php -v
-```
-
-```bash
 composer --version
-```
-
-```bash
 ls -la
+exit
 ```
 
-Exit:
+## Problem: Nginx never becomes "healthy" / Varnish never starts
+
+This was the original bug in this project (see Changelog #2). Confirm the fix is in place:
 
 ```bash
-exit
+grep -A2 "nginx:" docker-compose.yml | grep build
+```
+
+Should show `build: ./docker/nginx`, not `image: nginx:1.30`. Then rebuild:
+
+```bash
+docker compose build --no-cache nginx
+docker compose up -d nginx
+docker compose ps
+```
+
+Confirm curl now exists in the nginx container:
+
+```bash
+docker compose exec nginx curl --version
 ```
 
 ---
 
 # 41. OpenSearch Troubleshooting
 
-Check:
-
 ```bash
 docker compose ps opensearch
-```
-
-Logs:
-
-```bash
 docker compose logs --tail=200 opensearch
-```
-
-Check:
-
-```bash
 curl http://localhost:9200
-```
-
-Check health:
-
-```bash
 curl http://localhost:9200/_cluster/health
 ```
 
-If OpenSearch is not ready, wait and retry.
+If OpenSearch is not ready, wait and retry — for a single-node dev environment, expect `green` once startup finishes (can take 30–60s on first boot).
 
-For a single-node development environment, eventually expect:
+Common cause of a crash-looping OpenSearch container: insufficient `vm.max_map_count` on the Docker host. Fix (Linux host):
 
-```text
-green
+```bash
+sudo sysctl -w vm.max_map_count=262144
 ```
 
 ---
 
 # 42. Valkey Troubleshooting
 
-Check:
-
 ```bash
 docker compose ps redis
-```
-
-Run:
-
-```bash
 docker compose exec redis valkey-cli ping
+docker compose logs --tail=200 redis
 ```
 
 Expected:
@@ -1482,57 +1280,31 @@ Expected:
 PONG
 ```
 
-Logs:
-
-```bash
-docker compose logs --tail=200 redis
-```
-
 ---
 
 # 43. MariaDB Troubleshooting
 
-Check:
-
 ```bash
 docker compose ps db
-```
-
-Run:
-
-```bash
-docker compose exec db \
-mariadb-admin ping \
--h 127.0.0.1 \
--u root \
--p"${MYSQL_ROOT_PASSWORD}"
-```
-
-Logs:
-
-```bash
+docker compose exec db mariadb-admin ping -h 127.0.0.1 -u root -p"${MYSQL_ROOT_PASSWORD}"
 docker compose logs --tail=200 db
+```
+
+If MariaDB won't start after a bad shutdown, and you're OK losing local data:
+
+```bash
+docker compose down
+docker volume rm magento2-docker_db_data
+docker compose up -d db
 ```
 
 ---
 
 # 44. Nginx Troubleshooting
 
-Check:
-
 ```bash
 docker compose logs --tail=200 nginx
-```
-
-Test:
-
-```bash
 curl -I http://localhost:8081
-```
-
-Check Nginx configuration:
-
-```bash
 docker compose exec nginx nginx -t
 ```
 
@@ -1543,60 +1315,56 @@ syntax is ok
 test is successful
 ```
 
+If you edit `docker/nginx/default.conf`, reload without a full restart:
+
+```bash
+docker compose exec nginx nginx -s reload
+```
+
 ---
 
 # 45. Varnish Troubleshooting
 
-Check:
-
 ```bash
 docker compose logs --tail=200 varnish
-```
-
-Test:
-
-```bash
 curl -I http://localhost:8080
+docker compose exec varnish ls -la /etc/varnish/
 ```
 
-Check Varnish configuration:
+Reload VCL after editing `docker/varnish/default.vcl` without downtime:
 
 ```bash
-docker compose exec varnish ls -la /etc/varnish/
+./scripts/generate-varnish.sh
+```
+
+or manually:
+
+```bash
+docker compose restart varnish
 ```
 
 ---
 
 # 46. Magento Permission Troubleshooting
 
-Inside PHP:
-
 ```bash
 docker compose exec php bash
-```
-
-Check:
-
-```bash
 ls -ld var generated pub/static pub/media app/etc
 ```
 
-Magento permissions can be repaired with:
+Repair permissions:
 
 ```bash
 chown -R www-data:www-data var generated pub/static pub/media app/etc
-```
-
-Then:
-
-```bash
 chmod -R u+rwX,g+rwX var generated pub/static pub/media app/etc
+exit
 ```
 
-Exit:
+Or from the host in one shot:
 
 ```bash
-exit
+docker compose exec -T php chown -R www-data:www-data var generated pub/static pub/media app/etc
+docker compose exec -T php chmod -R ug+rwX var generated pub/static pub/media app/etc
 ```
 
 ---
@@ -1605,80 +1373,38 @@ exit
 
 ```bash
 docker compose exec php ls -la
-```
-
-Check:
-
-```bash
 docker compose exec php ls -la bin/
-```
-
-Magento CLI should exist:
-
-```text
-bin/magento
-```
-
-Test:
-
-```bash
 docker compose exec php php bin/magento --version
 ```
+
+`bin/magento` should exist and be executable.
 
 ---
 
 # 48. Check Magento Installation
 
 ```bash
-docker compose exec php \
-php bin/magento setup:db:status
-```
-
-Check modules:
-
-```bash
-docker compose exec php \
-php bin/magento module:status
-```
-
-Check mode:
-
-```bash
-docker compose exec php \
-php bin/magento deploy:mode:show
+docker compose exec php php bin/magento setup:db:status
+docker compose exec php php bin/magento module:status
+docker compose exec php php bin/magento deploy:mode:show
 ```
 
 ---
 
 # 49. Useful Daily Commands
 
-### Start
+### Start / Stop / Restart
 
 ```bash
 ./scripts/start.sh
-```
-
-### Stop
-
-```bash
 ./scripts/stop.sh
-```
-
-### Restart
-
-```bash
 ./scripts/restart.sh
 ```
 
-### Logs
+### Logs / Health
 
 ```bash
 ./scripts/logs.sh
-```
-
-### Health
-
-```bash
 ./scripts/health-check.sh
 ```
 
@@ -1686,87 +1412,80 @@ php bin/magento deploy:mode:show
 
 ```bash
 docker compose exec php php bin/magento
-```
-
-### Magento version
-
-```bash
 docker compose exec php php bin/magento --version
-```
-
-### Cache flush
-
-```bash
 docker compose exec php php bin/magento cache:flush
-```
-
-### Reindex
-
-```bash
 docker compose exec php php bin/magento indexer:reindex
 ```
+
+### Enter a shell in any container
+
+```bash
+docker compose exec php bash
+docker compose exec nginx bash
+docker compose exec db bash
+docker compose exec redis sh
+docker compose exec opensearch bash
+docker compose exec varnish bash
+```
+
+### Composer inside the PHP container
+
+```bash
+docker compose exec php composer install
+docker compose exec php composer update
+docker compose exec php composer require <vendor/package>
+```
+
+### Create an additional admin user
+
+```bash
+docker compose exec php php bin/magento admin:user:create \
+  --admin-user="newadmin" \
+  --admin-password="Password123!" \
+  --admin-email="newadmin@example.com" \
+  --admin-firstname="New" \
+  --admin-lastname="Admin"
+```
+
+### Enable Magento's built-in cron
+
+```bash
+docker compose exec php php bin/magento cron:install
+```
+
+### Switch deploy mode
+
+```bash
+docker compose exec php php bin/magento deploy:mode:set developer
+docker compose exec php php bin/magento deploy:mode:set production
+```
+
+> Production mode requires a full `setup:di:compile` and `setup:static-content:deploy` beforehand.
 
 ---
 
 # 50. Complete Validation Checklist
 
-Run:
+Run each of these in order — all should succeed before you consider the environment "ready":
 
 ```bash
 docker compose config
-```
-
-```bash
 docker compose ps
-```
-
-```bash
 docker compose exec db mariadb-admin ping -h 127.0.0.1 -u root -p"${MYSQL_ROOT_PASSWORD}" --silent
-```
-
-```bash
 docker compose exec redis valkey-cli ping
-```
-
-```bash
 curl http://localhost:9200
-```
-
-```bash
 curl http://localhost:9200/_cluster/health
-```
-
-```bash
 docker compose exec php php -v
-```
-
-```bash
 docker compose exec php composer --version
-```
-
-```bash
 docker compose exec php php bin/magento --version
-```
-
-```bash
 curl -I http://localhost:8081
-```
-
-```bash
 curl -I http://localhost:8080
-```
-
-Finally:
-
-```bash
 ./scripts/health-check.sh
 ```
 
 ---
 
 # 51. Expected Final Environment
-
-When everything is working:
 
 ```text
                     +----------------+
@@ -1781,6 +1500,7 @@ When everything is working:
                             |
                     +-------v--------+
                     |     nginx      |
+                    |   (+ curl)     |
                     +-------+--------+
                             |
                     +-------v--------+
@@ -1801,94 +1521,37 @@ When everything is working:
 # 52. Final URLs
 
 | Purpose       | URL                           |
-| ------------- | ----------------------------- |
+| ------------- | ------------------------------ |
 | Magento Store | `http://localhost:8080`       |
 | Magento Admin | `http://localhost:8080/admin` |
 | Direct Nginx  | `http://localhost:8081`       |
+| Nginx health  | `http://localhost:8081/health-check` |
 | OpenSearch    | `http://localhost:9200`       |
 
 ---
 
 # 53. Recommended First-Time Workflow
 
-Use exactly this order:
-
 ```bash
 cd magento2-docker
-```
-
-```bash
 chmod +x scripts/*.sh
-```
-
-```bash
 cp .env.example .env
-```
-
-Edit:
-
-```bash
-nano .env
-```
-
-Validate:
-
-```bash
-docker compose config
-```
-
-Create source directory:
-
-```bash
+nano .env                                    # fill in Composer keys, passwords
+docker compose config                        # validate
 mkdir -p src
-```
-
-Clean previous installation if one exists:
-
-```bash
-docker compose down --volumes --remove-orphans
-```
-
-If required:
-
-```bash
-./scripts/reset.sh
-```
-
-Then rebuild:
-
-```bash
+docker compose down --volumes --remove-orphans   # only if re-running
+./scripts/reset.sh                           # only if a previous install exists
 docker compose build --no-cache
-```
-
-Install:
-
-```bash
 ./scripts/install-magento.sh
-```
-
-Check:
-
-```bash
 docker compose ps
-```
-
-Run:
-
-```bash
 ./scripts/health-check.sh
 ```
 
 Then open:
 
 ```text
-http://localhost:8080
-```
-
-Admin:
-
-```text
-http://localhost:8080/admin
+Store: http://localhost:8080
+Admin: http://localhost:8080/admin
 ```
 
 ---
@@ -1903,15 +1566,13 @@ docker system prune -a --volumes
 
 unless you intentionally want to remove unrelated Docker resources from your machine.
 
-For this project, prefer:
+For this project, prefer the scoped cleanup:
 
 ```bash
 docker compose down --volumes --remove-orphans
 ```
 
-This limits cleanup to the Compose project.
-
-Also never commit:
+Never commit:
 
 ```text
 .env
@@ -1922,13 +1583,7 @@ admin passwords
 private keys
 ```
 
-Use:
-
-```bash
-.gitignore
-```
-
-to exclude sensitive files.
+`.gitignore` already excludes these — don't remove those entries.
 
 ---
 
@@ -1938,63 +1593,24 @@ The project is considered ready when all of these succeed:
 
 ```bash
 docker compose config
-```
-
-```bash
 docker compose ps
-```
-
-```bash
 docker compose exec db mariadb-admin ping -h 127.0.0.1 -u root -p"${MYSQL_ROOT_PASSWORD}" --silent
-```
-
-```bash
 docker compose exec redis valkey-cli ping
-```
-
-```bash
 curl http://localhost:9200/_cluster/health
-```
-
-```bash
 docker compose exec php php bin/magento --version
-```
-
-```bash
 curl -I http://localhost:8081
-```
-
-```bash
 curl -I http://localhost:8080
-```
-
-```bash
 ./scripts/health-check.sh
 ```
 
-Expected Magento version:
+Expected results:
 
 ```text
-Magento CLI 2.4.8-p5
-```
-
-Expected Valkey:
-
-```text
-PONG
-```
-
-Expected OpenSearch:
-
-```text
-green
-```
-
-Expected web endpoints:
-
-```text
-http://localhost:8080  -> PASS
-http://localhost:8081  -> PASS
+Magento version : Magento CLI 2.4.8-p5
+Valkey          : PONG
+OpenSearch      : green
+Nginx (:8081)   : PASS
+Varnish (:8080) : PASS
 ```
 
 ---
@@ -2002,32 +1618,32 @@ http://localhost:8081  -> PASS
 ## Quick Reference
 
 ```bash
-# Start
+# Start / stop / restart
 ./scripts/start.sh
-
-# Stop
 ./scripts/stop.sh
-
-# Restart
 ./scripts/restart.sh
 
-# Logs
+# Logs / health
 ./scripts/logs.sh
-
-# Health
 ./scripts/health-check.sh
 
-# Full reset
+# Full reset (destroys data — type DELETE to confirm)
 ./scripts/reset.sh
 
-# Validate Compose
+# Validate compose file
 docker compose config
 
-# Rebuild
+# Rebuild images from scratch
 docker compose build --no-cache
 
-# Install
+# Fresh install
 ./scripts/install-magento.sh
+
+# Reconfigure after code changes
+./scripts/configure-magento.sh
+
+# Regenerate Varnish VCL from Magento
+./scripts/generate-varnish.sh
 
 # Containers
 docker compose ps
@@ -2041,23 +1657,19 @@ docker compose exec php php bin/magento cache:flush
 # Reindex
 docker compose exec php php bin/magento indexer:reindex
 
-# OpenSearch
+# OpenSearch health
 curl http://localhost:9200/_cluster/health
 
-# Valkey
+# Valkey ping
 docker compose exec redis valkey-cli ping
 
-# MariaDB
+# MariaDB ping
 docker compose exec db mariadb-admin ping -h 127.0.0.1 -u root -p"${MYSQL_ROOT_PASSWORD}" --silent
 
-# Store
-http://localhost:8080
-
-# Admin
-http://localhost:8080/admin
-
-# Nginx
-http://localhost:8081
+# URLs
+# Store: http://localhost:8080
+# Admin: http://localhost:8080/admin
+# Nginx: http://localhost:8081
 ```
 
 **End of README**
