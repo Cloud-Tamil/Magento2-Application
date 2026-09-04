@@ -158,10 +158,17 @@ services:
 
   # ==========================================================
   # WEB SERVER - Nginx
+  #
+  # NOTE: built from a local Dockerfile (docker/nginx/Dockerfile)
+  # instead of the bare "nginx:1.30" image, because the official
+  # nginx image does not ship curl, and the healthcheck below
+  # relies on curl. Without this, nginx never reports "healthy"
+  # and Varnish (which depends on it) would never start.
   # ==========================================================
 
   nginx:
-    image: nginx:1.30
+    build:
+      context: ./docker/nginx
     container_name: magento-nginx
     restart: unless-stopped
 
