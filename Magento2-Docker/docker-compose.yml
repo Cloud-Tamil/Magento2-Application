@@ -6,7 +6,9 @@ services:
 
   db:
     image: mariadb:11.8
+
     container_name: magento-db
+
     restart: unless-stopped
 
     environment:
@@ -30,6 +32,7 @@ services:
           "CMD-SHELL",
           "mariadb-admin ping -h 127.0.0.1 -u root -p$${MARIADB_ROOT_PASSWORD} --silent"
         ]
+
       interval: 10s
       timeout: 5s
       retries: 30
@@ -40,12 +43,14 @@ services:
 
 
   # ==========================================================
-  # CACHE - Valkey
+  # CACHE - VALKEY
   # ==========================================================
 
   redis:
     image: valkey/valkey:8.1
+
     container_name: magento-redis
+
     restart: unless-stopped
 
     command:
@@ -63,6 +68,7 @@ services:
           "valkey-cli",
           "ping"
         ]
+
       interval: 10s
       timeout: 5s
       retries: 30
@@ -73,19 +79,25 @@ services:
 
 
   # ==========================================================
-  # SEARCH - OpenSearch
+  # SEARCH - OPENSEARCH
   # ==========================================================
 
   opensearch:
     image: opensearchproject/opensearch:3
+
     container_name: magento-opensearch
+
     restart: unless-stopped
 
     environment:
       discovery.type: single-node
+
       DISABLE_INSTALL_DEMO_CONFIG: "true"
+
       DISABLE_SECURITY_PLUGIN: "true"
+
       OPENSEARCH_JAVA_OPTS: "-Xms1g -Xmx1g"
+
       bootstrap.memory_lock: "true"
 
     ulimits:
@@ -103,8 +115,9 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fs http://127.0.0.1:9200/_cluster/health >/dev/null"
+          "curl -fs http://127.0.0.1:9200/_cluster/health >/dev/null 2>&1"
         ]
+
       interval: 15s
       timeout: 10s
       retries: 30
@@ -115,18 +128,22 @@ services:
 
 
   # ==========================================================
-  # APPLICATION - Magento PHP-FPM
+  # APPLICATION - PHP FPM
   # ==========================================================
 
   php:
     build:
       context: ./docker/php
+      dockerfile: Dockerfile
 
     container_name: magento-php
+
     restart: unless-stopped
 
     env_file:
       - .env
+
+    working_dir: /var/www/html
 
     volumes:
       - ./src:/var/www/html
@@ -135,8 +152,9 @@ services:
       test:
         [
           "CMD-SHELL",
-          "php-fpm -t"
+          "php-fpm -t >/dev/null 2>&1"
         ]
+
       interval: 15s
       timeout: 5s
       retries: 10
@@ -157,19 +175,16 @@ services:
 
 
   # ==========================================================
-  # WEB SERVER - Nginx
-  #
-  # NOTE: built from a local Dockerfile (docker/nginx/Dockerfile)
-  # instead of the bare "nginx:1.30" image, because the official
-  # nginx image does not ship curl, and the healthcheck below
-  # relies on curl. Without this, nginx never reports "healthy"
-  # and Varnish (which depends on it) would never start.
+  # WEB - NGINX
   # ==========================================================
 
   nginx:
     build:
       context: ./docker/nginx
+      dockerfile: Dockerfile
+
     container_name: magento-nginx
+
     restart: unless-stopped
 
     ports:
@@ -183,8 +198,9 @@ services:
       test:
         [
           "CMD-SHELL",
-          "curl -fs http://127.0.0.1/ >/dev/null"
+          "curl -fs http://127.0.0.1/health-check >/dev/null 2>&1"
         ]
+
       interval: 15s
       timeout: 5s
       retries: 10
@@ -199,12 +215,14 @@ services:
 
 
   # ==========================================================
-  # HTTP CACHE - Varnish
+  # HTTP CACHE - VARNISH
   # ==========================================================
 
   varnish:
     image: varnish:8
+
     container_name: magento-varnish
+
     restart: unless-stopped
 
     ports:
@@ -219,10 +237,11 @@ services:
           "CMD-SHELL",
           "varnishadm ping >/dev/null 2>&1"
         ]
+
       interval: 15s
       timeout: 5s
       retries: 10
-      start_period: 20s
+      start_period: 10s
 
     depends_on:
       nginx:
